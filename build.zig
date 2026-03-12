@@ -214,12 +214,6 @@ pub fn build(b: *std.Build) !void {
             if (b.lazyDependency(name, .{})) |dependency| {
                 glfw.root_module.addIncludePath(dependency.path("include"));
                 if (install_dependency_headers) glfw.installHeadersDirectory(dependency.path("include"), "", .{});
-                // install_dependency_headers.dependOn(&b.addInstallDirectory(.{
-                //     .source_dir = dependency.path("include"),
-                //     .install_dir = .header,
-                //     .install_subdir = "",
-                //     .include_extensions = &.{".h"},
-                // }).step);
             }
         }
         if (b.lazyDependency("libxcursor", .{})) |dependency| {
@@ -233,7 +227,6 @@ pub fn build(b: *std.Build) !void {
             });
             glfw.root_module.addConfigHeader(xcursor_header);
             if (install_dependency_headers) glfw.installConfigHeader(xcursor_header);
-            // install_dependency_headers.dependOn(&b.addInstallHeaderFile(xcursor_header.getOutputFile(), "X11/Xcursor/Xcursor.h").step);
         }
     }
 
@@ -278,10 +271,6 @@ pub fn build(b: *std.Build) !void {
                 const header_file = run_wayland_scanner1.addOutputFileArg(b.fmt("{s}-client-protocol.h", .{output_name}));
                 if (!use_prebundled_headers) glfw.root_module.addIncludePath(header_file.dirname());
                 if (install_dependency_headers) glfw.installHeader(header_file, b.fmt("wayland-protocols/{s}-client-protocol.h", .{output_name}));
-                // install_dependency_headers.dependOn(&b.addInstallHeaderFile(
-                //     header_file,
-                //     b.fmt("wayland-protocols/{s}-client-protocol.h", .{output_name}),
-                // ).step);
             }
 
             {
@@ -290,10 +279,6 @@ pub fn build(b: *std.Build) !void {
                 const header_file = run_wayland_scanner2.addOutputFileArg(b.fmt("{s}-client-protocol-code.h", .{output_name}));
                 if (!use_prebundled_headers) glfw.root_module.addIncludePath(header_file.dirname());
                 if (install_dependency_headers) glfw.installHeader(header_file, b.fmt("wayland-protocols/{s}-client-protocol-code.h", .{output_name}));
-                // install_dependency_headers.dependOn(&b.addInstallHeaderFile(
-                //     header_file,
-                //     b.fmt("wayland-protocols/{s}-client-protocol-code.h", .{output_name}),
-                // ).step);
             }
         }
 
@@ -309,31 +294,12 @@ pub fn build(b: *std.Build) !void {
                 const lib = wayland.artifact(name);
                 if (!use_prebundled_headers) glfw.root_module.include_dirs.appendSlice(b.allocator, lib.root_module.include_dirs.items) catch @panic("OOM");
                 if (install_dependency_headers) glfw.installLibraryHeaders(lib);
-                // for (lib.installed_headers.items) |installation| {
-                //     switch (installation) {
-                //         .file => |file| {
-                //             install_dependency_headers.dependOn(&b.addInstallHeaderFile(file.source, b.pathJoin(&.{ "wayland", file.dest_rel_path })).step);
-                //         },
-                //         .directory => |directory| install_dependency_headers.dependOn(&b.addInstallDirectory(.{
-                //             .source_dir = directory.source,
-                //             .install_dir = .header,
-                //             .install_subdir = b.pathJoin(&.{ "wayland", directory.dest_rel_path }),
-                //             .include_extensions = &.{".h"},
-                //         }).step),
-                //     }
-                // }
             }
         }
 
         if (b.lazyDependency("libxkbcommon", .{})) |dependency| {
             if (!use_prebundled_headers) glfw.root_module.addIncludePath(dependency.path("include"));
             if (install_dependency_headers) glfw.installHeadersDirectory(dependency.path("include"), "", .{});
-            // install_dependency_headers.dependOn(&b.addInstallDirectory(.{
-            //     .source_dir = dependency.path("include"),
-            //     .install_dir = .header,
-            //     .install_subdir = "",
-            //     .include_extensions = &.{".h"},
-            // }).step);
         }
     }
 }
