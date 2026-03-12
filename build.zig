@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) !void {
     const enable_wayland = b.option(bool, "wayland", "Build support for Wayland") orelse (target.result.os.tag != .windows and !target.result.os.tag.isDarwin());
 
     const install_dependency_headers = b.option(bool, "only-install-dependency-headers", "Only install header files of dependencies (default: false)") orelse false;
-    const use_prebundled_headers = b.option(bool, "use-prebundled-headers", "Use prebundled dependency headers instead of fetching them (default: true)") orelse true;
+    const prefer_prebundled_headers = b.option(bool, "prefer-bundled-headers", "Prefer pre-bundled dependency headers instead of fetching from upstream repositories");
 
     const flags: []const []const u8 = &.{
         "-fvisibility=hidden",
@@ -52,27 +52,15 @@ pub fn build(b: *std.Build) !void {
         },
     });
 
-    if (install_dependency_headers and use_prebundled_headers) {
-        try b.getInstallStep().addError(
-            \\Using '-Donly-install-dependency-headers' without '-Duse-prebundled-headers=false' would cause the prebundled header to be reinstalled.
-        , .{});
-    } else if (install_dependency_headers) {
+    if (install_dependency_headers) {
         b.getInstallStep().dependOn(&b.addInstallArtifact(glfw, .{
             .dest_dir = .disabled,
             .pdb_dir = .disabled,
-            .h_dir = .default,
+            .h_dir = .{ .override = .prefix },
             .implib_dir = .disabled,
         }).step);
     } else {
         b.installArtifact(glfw);
-    }
-
-    if (use_prebundled_headers) {
-        glfw.root_module.addIncludePath(b.path("deps/include"));
-        if (enable_wayland) {
-            glfw.root_module.addIncludePath(b.path("deps/include/wayland"));
-            glfw.root_module.addIncludePath(b.path("deps/include/wayland-protocols"));
-        }
     }
 
     if (target.result.os.tag.isDarwin()) {
@@ -151,6 +139,19 @@ pub fn build(b: *std.Build) !void {
         glfw.root_module.linkSystemLibrary("gdi32", .{});
     }
 
+    if (enable_x11 or enable_wayland) {
+        if (target.result.os.tag == .linux) {
+            glfw.root_module.addCSourceFile(.{ .file = upstream.path("src/linux_joystick.c"), .flags = flags });
+        }
+        glfw.root_module.addCSourceFile(.{ .file = upstream.path("src/xkb_unicode.c"), .flags = flags });
+        glfw.root_module.addCSourceFile(.{ .file = upstream.path("src/posix_poll.c"), .flags = flags });
+    }
+
+    const x11_header_subdir = "x11-headers";
+    const wayland_protocols_header_subdir = "wayland-protocols-headers";
+    const wayland_header_subdir = "wayland-headers";
+    const libxkbcommon_header_subdir = "libxkbcommon-headers";
+
     if (enable_x11) {
         glfw.root_module.addCMacro("_GLFW_X11", "");
         glfw.root_module.addCSourceFiles(.{
@@ -163,6 +164,59 @@ pub fn build(b: *std.Build) !void {
                 "glx_context.c",
             },
         });
+
+        const use_system_x11_headers = b.systemIntegrationOption("x11-headers", .{});
+        if (prefer_prebundled_headers orelse !use_system_x11_headers) {
+            glfw.root_module.addIncludePath(b.path(b.pathJoin(&.{ "deps", x11_header_subdir })));
+            if (install_dependency_headers) {
+                try b.getInstallStep().addError(
+                    \\Using '-Donly-install-dependency-headers' without '-Dprefer-bundled-headers=false' would cause the pre-bundled header to be reinstalled.
+                , .{});
+            }
+        } else {
+            for ([_][]const u8{
+                "xorgproto",
+                "libx11",
+                "libxrandr",
+                "libxinerama",
+                "libxcursor",
+                "libxi",
+                "libxext",
+                "libxrender", // dependency of libxrandr
+                "libxfixes", //dependency of libxi and libxcursor
+            }) |name| {
+                if (use_system_x11_headers) {
+                    const pkg_name = if (std.mem.eql(u8, name, "xorgproto"))
+                        "xproto"
+                    else
+                        std.mem.trimStart(u8, name, "lib");
+                    const include_dirs = collectPkgConfigIncludeDirs(b, pkg_name) catch |err| {
+                        glfw.step.addError("failed to resolve '{s}' package: {}", .{ pkg_name, err }) catch @panic("OOM");
+                        continue;
+                    };
+                    for (include_dirs) |include_dir| {
+                        glfw.root_module.addIncludePath(.{ .cwd_relative = include_dir });
+                        if (install_dependency_headers) glfw.installHeadersDirectory(.{ .cwd_relative = include_dir }, x11_header_subdir, .{});
+                    }
+                } else if (b.lazyDependency(name, .{})) |dependency| {
+                    if (std.mem.eql(u8, name, "libxcursor")) {
+                        const xcursor_header = b.addConfigHeader(.{
+                            .style = .{ .autoconf_undef = dependency.path("include/X11/Xcursor/Xcursor.h.in") },
+                            .include_path = "X11/Xcursor/Xcursor.h",
+                        }, .{
+                            .XCURSOR_LIB_MAJOR = @as(i64, @intCast(xcursor_version.major)),
+                            .XCURSOR_LIB_MINOR = @as(i64, @intCast(xcursor_version.minor)),
+                            .XCURSOR_LIB_REVISION = @as(i64, @intCast(xcursor_version.patch)),
+                        });
+                        glfw.root_module.addConfigHeader(xcursor_header);
+                        if (install_dependency_headers) glfw.installHeader(xcursor_header.getOutputFile(), b.pathJoin(&.{ x11_header_subdir, xcursor_header.include_path }));
+                    } else {
+                        glfw.root_module.addIncludePath(dependency.path("include"));
+                        if (install_dependency_headers) glfw.installHeadersDirectory(dependency.path("include"), x11_header_subdir, .{});
+                    }
+                }
+            }
+        }
     }
 
     if (enable_wayland) {
@@ -190,116 +244,163 @@ pub fn build(b: *std.Build) !void {
                 glfw.root_module.addIncludePath(evdev_proto.path("include"));
             }
         }
-    }
 
-    if (enable_x11 or enable_wayland) {
-        if (target.result.os.tag == .linux) {
-            glfw.root_module.addCSourceFile(.{ .file = upstream.path("src/linux_joystick.c"), .flags = flags });
-        }
-        glfw.root_module.addCSourceFile(.{ .file = upstream.path("src/xkb_unicode.c"), .flags = flags });
-        glfw.root_module.addCSourceFile(.{ .file = upstream.path("src/posix_poll.c"), .flags = flags });
-    }
-
-    if (!use_prebundled_headers and enable_x11) {
-        for ([_][]const u8{
-            "xorgproto",
-            "libx11",
-            "libxrandr",
-            "libxinerama",
-            "libxi",
-            "libxext",
-            "libxrender", // dependency of libxrandr
-            "libxfixes", //dependency of libxi and libxcursor
-        }) |name| {
-            if (b.lazyDependency(name, .{})) |dependency| {
-                glfw.root_module.addIncludePath(dependency.path("include"));
-                if (install_dependency_headers) glfw.installHeadersDirectory(dependency.path("include"), "", .{});
-            }
-        }
-        if (b.lazyDependency("libxcursor", .{})) |dependency| {
-            const xcursor_header = b.addConfigHeader(.{
-                .style = .{ .autoconf_undef = dependency.path("include/X11/Xcursor/Xcursor.h.in") },
-                .include_path = "X11/Xcursor/Xcursor.h",
-            }, .{
-                .XCURSOR_LIB_MAJOR = @as(i64, @intCast(xcursor_version.major)),
-                .XCURSOR_LIB_MINOR = @as(i64, @intCast(xcursor_version.minor)),
-                .XCURSOR_LIB_REVISION = @as(i64, @intCast(xcursor_version.patch)),
-            });
-            glfw.root_module.addConfigHeader(xcursor_header);
-            if (install_dependency_headers) glfw.installConfigHeader(xcursor_header);
-        }
-    }
-
-    if (!use_prebundled_headers and enable_wayland) {
         const use_system_wayland_scanner = b.systemIntegrationOption("wayland-scanner", .{});
-        const host_wayland = if (!use_system_wayland_scanner)
-            b.lazyDependency("wayland", .{
-                .target = b.graph.host,
-                .optimize = std.builtin.OptimizeMode.Debug,
-            })
-        else
-            null;
-
-        for (
-            [_][]const u8{
-                "wayland.xml",
-                "viewporter.xml",
-                "xdg-shell.xml",
-                "idle-inhibit-unstable-v1.xml",
-                "pointer-constraints-unstable-v1.xml",
-                "relative-pointer-unstable-v1.xml",
-                "fractional-scale-v1.xml",
-                "xdg-activation-v1.xml",
-                "xdg-decoration-unstable-v1.xml",
-            },
-        ) |input_file| {
-            const output_name = input_file[0 .. input_file.len - ".xml".len];
-
-            const run_wayland_scanner1: *std.Build.Step.Run = .create(b, "run wayland-scanner");
-            const run_wayland_scanner2: *std.Build.Step.Run = .create(b, "run wayland-scanner");
-            if (use_system_wayland_scanner) {
-                run_wayland_scanner1.addArg("wayland-scanner");
-                run_wayland_scanner2.addArg("wayland-scanner");
-            } else if (host_wayland) |wayland_host| {
-                run_wayland_scanner1.addArtifactArg(wayland_host.artifact("wayland-scanner"));
-                run_wayland_scanner2.addArtifactArg(wayland_host.artifact("wayland-scanner"));
+        if (prefer_prebundled_headers orelse !use_system_wayland_scanner) {
+            glfw.root_module.addIncludePath(b.path(b.pathJoin(&.{ "deps", wayland_protocols_header_subdir })));
+            if (install_dependency_headers) {
+                try b.getInstallStep().addError(
+                    \\Using '-Donly-install-dependency-headers' without '-Dprefer-bundled-headers=false' would cause the pre-bundled header to be reinstalled.
+                , .{});
             }
+        } else {
+            const host_wayland = if (!use_system_wayland_scanner)
+                b.lazyDependency("wayland", .{
+                    .target = b.graph.host,
+                    .optimize = std.builtin.OptimizeMode.Debug,
+                })
+            else
+                null;
 
-            {
-                run_wayland_scanner1.addArg("client-header");
-                run_wayland_scanner1.addFileArg(upstream.path("deps/wayland").path(b, input_file));
-                const header_file = run_wayland_scanner1.addOutputFileArg(b.fmt("{s}-client-protocol.h", .{output_name}));
-                if (!use_prebundled_headers) glfw.root_module.addIncludePath(header_file.dirname());
-                if (install_dependency_headers) glfw.installHeader(header_file, b.fmt("wayland-protocols/{s}-client-protocol.h", .{output_name}));
-            }
+            for (
+                [_][]const u8{
+                    "wayland.xml",
+                    "viewporter.xml",
+                    "xdg-shell.xml",
+                    "idle-inhibit-unstable-v1.xml",
+                    "pointer-constraints-unstable-v1.xml",
+                    "relative-pointer-unstable-v1.xml",
+                    "fractional-scale-v1.xml",
+                    "xdg-activation-v1.xml",
+                    "xdg-decoration-unstable-v1.xml",
+                },
+            ) |input_file| {
+                const output_name = input_file[0 .. input_file.len - ".xml".len];
 
-            {
-                run_wayland_scanner2.addArg("private-code");
-                run_wayland_scanner2.addFileArg(upstream.path("deps/wayland").path(b, input_file));
-                const header_file = run_wayland_scanner2.addOutputFileArg(b.fmt("{s}-client-protocol-code.h", .{output_name}));
-                if (!use_prebundled_headers) glfw.root_module.addIncludePath(header_file.dirname());
-                if (install_dependency_headers) glfw.installHeader(header_file, b.fmt("wayland-protocols/{s}-client-protocol-code.h", .{output_name}));
+                const run_wayland_scanner1: *std.Build.Step.Run = .create(b, "run wayland-scanner");
+                const run_wayland_scanner2: *std.Build.Step.Run = .create(b, "run wayland-scanner");
+                if (use_system_wayland_scanner) {
+                    run_wayland_scanner1.addArg("wayland-scanner");
+                    run_wayland_scanner2.addArg("wayland-scanner");
+                } else if (host_wayland) |wayland_host| {
+                    run_wayland_scanner1.addArtifactArg(wayland_host.artifact("wayland-scanner"));
+                    run_wayland_scanner2.addArtifactArg(wayland_host.artifact("wayland-scanner"));
+                }
+
+                {
+                    run_wayland_scanner1.addArg("client-header");
+                    run_wayland_scanner1.addFileArg(upstream.path("deps/wayland").path(b, input_file));
+                    const filename = b.fmt("{s}-client-protocol.h", .{output_name});
+                    const header_file = run_wayland_scanner1.addOutputFileArg(filename);
+                    glfw.root_module.addIncludePath(header_file.dirname());
+                    if (install_dependency_headers) glfw.installHeader(header_file, b.pathJoin(&.{ wayland_protocols_header_subdir, filename }));
+                }
+
+                {
+                    run_wayland_scanner2.addArg("private-code");
+                    run_wayland_scanner2.addFileArg(upstream.path("deps/wayland").path(b, input_file));
+                    const filename = b.fmt("{s}-client-protocol-code.h", .{output_name});
+                    const header_file = run_wayland_scanner2.addOutputFileArg(filename);
+                    glfw.root_module.addIncludePath(header_file.dirname());
+                    if (install_dependency_headers) glfw.installHeader(header_file, b.pathJoin(&.{ wayland_protocols_header_subdir, filename }));
+                }
             }
         }
 
-        if (b.lazyDependency("wayland", .{
-            .target = target,
-            .optimize = optimize,
-        })) |wayland| {
+        const use_system_wayland_headers = b.systemIntegrationOption("wayland-headers", .{});
+        if (prefer_prebundled_headers orelse !use_system_wayland_headers) {
+            glfw.root_module.addIncludePath(b.path(b.pathJoin(&.{ "deps", wayland_header_subdir })));
+            if (install_dependency_headers) {
+                try b.getInstallStep().addError(
+                    \\Using '-Donly-install-dependency-headers' without '-Dprefer-bundled-headers=false' would cause the pre-bundled header to be reinstalled.
+                , .{});
+            }
+        } else {
             for ([_][]const u8{
                 "wayland-client",
                 "wayland-cursor",
                 "wayland-egl",
             }) |name| {
-                const lib = wayland.artifact(name);
-                if (!use_prebundled_headers) glfw.root_module.include_dirs.appendSlice(b.allocator, lib.root_module.include_dirs.items) catch @panic("OOM");
-                if (install_dependency_headers) glfw.installLibraryHeaders(lib);
+                if (use_system_wayland_headers) {
+                    const include_dirs = collectPkgConfigIncludeDirs(b, name) catch |err| {
+                        glfw.step.addError("failed to resolve '{s}' package: {}", .{ name, err }) catch @panic("OOM");
+                        continue;
+                    };
+                    for (include_dirs) |include_dir| {
+                        glfw.root_module.addIncludePath(.{ .cwd_relative = include_dir });
+                        if (install_dependency_headers) glfw.installHeadersDirectory(.{ .cwd_relative = include_dir }, "", .{});
+                    }
+                } else if (b.lazyDependency("wayland", .{
+                    .target = target,
+                    .optimize = optimize,
+                })) |wayland| {
+                    const lib = wayland.artifact(name);
+                    glfw.root_module.include_dirs.appendSlice(b.allocator, lib.root_module.include_dirs.items) catch @panic("OOM");
+                    if (install_dependency_headers) {
+                        for (lib.installed_headers.items) |installation| {
+                            switch (installation) {
+                                .directory => |directory| glfw.installHeadersDirectory(directory.source, b.pathJoin(&.{ wayland_header_subdir, directory.dest_rel_path }), directory.options),
+                                .file => |file| glfw.installHeader(file.source, b.pathJoin(&.{ wayland_header_subdir, file.dest_rel_path })),
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        if (b.lazyDependency("libxkbcommon", .{})) |dependency| {
-            if (!use_prebundled_headers) glfw.root_module.addIncludePath(dependency.path("include"));
-            if (install_dependency_headers) glfw.installHeadersDirectory(dependency.path("include"), "", .{});
+        const use_system_libxkbcommon_headers = b.systemIntegrationOption("libxkbcommon", .{});
+        if (prefer_prebundled_headers orelse !use_system_libxkbcommon_headers) {
+            glfw.root_module.addIncludePath(b.path(b.pathJoin(&.{ "deps", libxkbcommon_header_subdir })));
+            if (install_dependency_headers) {
+                try b.getInstallStep().addError(
+                    \\Using '-Donly-install-dependency-headers' without '-Dprefer-bundled-headers=false' would cause the pre-bundled header to be reinstalled.
+                , .{});
+            }
+        } else {
+            if (use_system_libxkbcommon_headers) blk: {
+                const include_dirs = collectPkgConfigIncludeDirs(b, "xkbcommon") catch |err| {
+                    glfw.step.addError("failed to resolve '{s}' package: {}", .{ "xkbcommon", err }) catch @panic("OOM");
+                    break :blk;
+                };
+                for (include_dirs) |include_dir| {
+                    glfw.root_module.addIncludePath(.{ .cwd_relative = include_dir });
+                    if (install_dependency_headers) glfw.installHeadersDirectory(.{ .cwd_relative = include_dir }, libxkbcommon_header_subdir, .{});
+                }
+            } else if (b.lazyDependency("libxkbcommon", .{})) |dependency| {
+                glfw.root_module.addIncludePath(dependency.path("include"));
+                if (install_dependency_headers) glfw.installHeadersDirectory(dependency.path("include"), libxkbcommon_header_subdir, .{});
+            }
         }
     }
+}
+
+/// Similar to `linkSystemLibrary` but only adds include directories.
+/// This functionality would ideally be provided by the build system.
+fn collectPkgConfigIncludeDirs(b: *std.Build, pkg_name: []const u8) ![][]const u8 {
+    var code: u8 = undefined;
+    const pkg_config_exe = b.graph.env_map.get("PKG_CONFIG") orelse "pkg-config";
+    const stdout = if (b.runAllowFail(&[_][]const u8{
+        pkg_config_exe,
+        pkg_name,
+        "--cflags-only-I",
+    }, &code, .Ignore)) |stdout| stdout else |err| switch (err) {
+        error.ProcessTerminated => return error.PkgConfigCrashed,
+        error.ExecNotSupported => return error.PkgConfigFailed,
+        error.ExitCodeFailure => return error.PkgConfigFailed,
+        error.FileNotFound => return error.PkgConfigNotInstalled,
+        else => return err,
+    };
+
+    var include_dirs: std.ArrayList([]const u8) = .empty;
+    var arg_it = std.mem.tokenizeAny(u8, stdout, " \r\n\t");
+    while (arg_it.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-I")) {
+            const dir = arg_it.next() orelse return error.PkgConfigInvalidOutput;
+            include_dirs.append(b.allocator, dir) catch @panic("OOM");
+        } else if (std.mem.startsWith(u8, arg, "-I")) {
+            include_dirs.append(b.allocator, arg["-I".len..]) catch @panic("OOM");
+        }
+    }
+
+    return include_dirs.items;
 }

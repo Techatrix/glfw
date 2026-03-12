@@ -17,7 +17,7 @@
             .hash = "evdev_proto-5.8.0-SfcL4UozAQApBm-pP5nyp96jfEZp9clFY7Cl6G477dis",
             .lazy = true,
         },
-        // All of the dependencies below are only required when configuring `-Duse-prebundled-headers=false`
+        // All the dependencies below are only required when configuring `-Dprefer-bundled-headers=false`
         .wayland = .{
             .url = "git+https://github.com/allyourcodebase/wayland.git?ref=1.24.0-3#c3e9e7b92a135badb24643da7be8a441a060af9d",
             .hash = "wayland-1.24.0-3-dxEBa6N9AAD5fW7Hq-V8ngPRpUTky6PmnHxVFRPvn1aI",
