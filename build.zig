@@ -200,7 +200,7 @@ pub fn build(b: *std.Build) !void {
         glfw.root_module.addCSourceFile(.{ .file = upstream.path("src/posix_poll.c"), .flags = flags });
     }
 
-    if (!use_prebundled_headers and (enable_x11 or enable_wayland)) {
+    if (!use_prebundled_headers and enable_x11) {
         for ([_][]const u8{
             "xorgproto",
             "libx11",
