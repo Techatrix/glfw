@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) !void {
             .link_libc = true,
         }),
     });
-    glfw.installHeadersDirectory(upstream.path("include"), "", .{});
+    if (!install_dependency_headers) glfw.installHeadersDirectory(upstream.path("include"), "", .{});
     if (linkage == .dynamic) glfw.root_module.addCMacro("_GLFW_BUILD_DLL", "");
     glfw.root_module.addCSourceFiles(.{
         .root = upstream.path("src"),
