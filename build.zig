@@ -378,12 +378,12 @@ pub fn build(b: *std.Build) !void {
 /// This functionality would ideally be provided by the build system.
 fn collectPkgConfigIncludeDirs(b: *std.Build, pkg_name: []const u8) ![][]const u8 {
     var code: u8 = undefined;
-    const pkg_config_exe = b.graph.env_map.get("PKG_CONFIG") orelse "pkg-config";
+    const pkg_config_exe = b.graph.environ_map.get("PKG_CONFIG") orelse "pkg-config";
     const stdout = if (b.runAllowFail(&[_][]const u8{
         pkg_config_exe,
         pkg_name,
         "--cflags-only-I",
-    }, &code, .Ignore)) |stdout| stdout else |err| switch (err) {
+    }, &code, .ignore)) |stdout| stdout else |err| switch (err) {
         error.ProcessTerminated => return error.PkgConfigCrashed,
         error.ExecNotSupported => return error.PkgConfigFailed,
         error.ExitCodeFailure => return error.PkgConfigFailed,
